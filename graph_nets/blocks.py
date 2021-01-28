@@ -437,6 +437,28 @@ class EdgeBlock(_base.AbstractModule):
     with self._enter_variable_scope():
       self._edge_model = edge_model_fn()
 
+  def _collect_features(self, graph):
+    """Collects the features of interest for edges"""
+    edges_to_collect = []
+
+    if self._use_edges:
+      _validate_graph(graph, (EDGES,), "when use_edges == True")
+      edges_to_collect.append(graph.edges)
+
+    if self._use_receiver_nodes:
+      edges_to_collect.append(broadcast_receiver_nodes_to_edges(graph))
+
+    if self._use_sender_nodes:
+      edges_to_collect.append(broadcast_sender_nodes_to_edges(graph))
+
+    if self._use_globals:
+      num_edges_hint = _get_static_num_edges(graph)
+      edges_to_collect.append(
+          broadcast_globals_to_edges(graph, num_edges_hint=num_edges_hint))
+
+    collected_edges = tf.concat(edges_to_collect, axis=-1)
+    return collected_edges
+
   def _build(self, graph, edge_model_kwargs=None):
     """Connects the edge block.
 
@@ -462,24 +484,7 @@ class EdgeBlock(_base.AbstractModule):
     _validate_graph(
         graph, (SENDERS, RECEIVERS, N_EDGE), " when using an EdgeBlock")
 
-    edges_to_collect = []
-
-    if self._use_edges:
-      _validate_graph(graph, (EDGES,), "when use_edges == True")
-      edges_to_collect.append(graph.edges)
-
-    if self._use_receiver_nodes:
-      edges_to_collect.append(broadcast_receiver_nodes_to_edges(graph))
-
-    if self._use_sender_nodes:
-      edges_to_collect.append(broadcast_sender_nodes_to_edges(graph))
-
-    if self._use_globals:
-      num_edges_hint = _get_static_num_edges(graph)
-      edges_to_collect.append(
-          broadcast_globals_to_edges(graph, num_edges_hint=num_edges_hint))
-
-    collected_edges = tf.concat(edges_to_collect, axis=-1)
+    collected_edges = self._collect_features(graph)
     updated_edges = self._edge_model(collected_edges, **edge_model_kwargs)
     return graph.replace(edges=updated_edges)
 
@@ -561,22 +566,8 @@ class NodeBlock(_base.AbstractModule):
         self._sent_edges_aggregator = SentEdgesToNodesAggregator(
             sent_edges_reducer)
 
-  def _build(self, graph, node_model_kwargs=None):
-    """Connects the node block.
-
-    Args:
-      graph: A `graphs.GraphsTuple` containing `Tensor`s, whose individual edges
-        features (if `use_received_edges` or `use_sent_edges` is `True`),
-        individual nodes features (if `use_nodes` is True) and per graph globals
-        (if `use_globals` is `True`) should be concatenable on the last axis.
-      node_model_kwargs: Optional keyword arguments to pass to the `node_model`.
-
-    Returns:
-      An output `graphs.GraphsTuple` with updated nodes.
-    """
-    if node_model_kwargs is None:
-      node_model_kwargs = {}
-
+  def _collect_features(self, graph):
+    """Collects the features of interest for nodes"""
     nodes_to_collect = []
 
     if self._use_received_edges:
@@ -598,6 +589,25 @@ class NodeBlock(_base.AbstractModule):
           broadcast_globals_to_nodes(graph, num_nodes_hint=num_nodes_hint))
 
     collected_nodes = tf.concat(nodes_to_collect, axis=-1)
+    return collected_nodes
+
+  def _build(self, graph, node_model_kwargs=None):
+    """Connects the node block.
+
+    Args:
+      graph: A `graphs.GraphsTuple` containing `Tensor`s, whose individual edges
+        features (if `use_received_edges` or `use_sent_edges` is `True`),
+        individual nodes features (if `use_nodes` is True) and per graph globals
+        (if `use_globals` is `True`) should be concatenable on the last axis.
+      node_model_kwargs: Optional keyword arguments to pass to the `node_model`.
+
+    Returns:
+      An output `graphs.GraphsTuple` with updated nodes.
+    """
+    if node_model_kwargs is None:
+      node_model_kwargs = {}
+
+    collected_nodes = self._collect_features(graph)
     updated_nodes = self._node_model(collected_nodes, **node_model_kwargs)
     return graph.replace(nodes=updated_nodes)
 
@@ -670,6 +680,25 @@ class GlobalBlock(_base.AbstractModule):
         self._nodes_aggregator = NodesToGlobalsAggregator(
             nodes_reducer)
 
+  def _collect_features(self, graph):
+    """Collects the features of interest for globals"""
+    globals_to_collect = []
+
+    if self._use_edges:
+      _validate_graph(graph, (EDGES,), "when use_edges == True")
+      globals_to_collect.append(self._edges_aggregator(graph))
+
+    if self._use_nodes:
+      _validate_graph(graph, (NODES,), "when use_nodes == True")
+      globals_to_collect.append(self._nodes_aggregator(graph))
+
+    if self._use_globals:
+      _validate_graph(graph, (GLOBALS,), "when use_globals == True")
+      globals_to_collect.append(graph.globals)
+
+    collected_globals = tf.concat(globals_to_collect, axis=-1)
+    return collected_globals
+
   def _build(self, graph, global_model_kwargs=None):
     """Connects the global block.
 
@@ -687,21 +716,7 @@ class GlobalBlock(_base.AbstractModule):
     if global_model_kwargs is None:
       global_model_kwargs = {}
 
-    globals_to_collect = []
-
-    if self._use_edges:
-      _validate_graph(graph, (EDGES,), "when use_edges == True")
-      globals_to_collect.append(self._edges_aggregator(graph))
-
-    if self._use_nodes:
-      _validate_graph(graph, (NODES,), "when use_nodes == True")
-      globals_to_collect.append(self._nodes_aggregator(graph))
-
-    if self._use_globals:
-      _validate_graph(graph, (GLOBALS,), "when use_globals == True")
-      globals_to_collect.append(graph.globals)
-
-    collected_globals = tf.concat(globals_to_collect, axis=-1)
+    collected_globals = self._collect_features(graph)
     updated_globals = self._global_model(
         collected_globals, **global_model_kwargs)
     return graph.replace(globals=updated_globals)
